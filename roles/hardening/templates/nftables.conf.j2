@@ -1,0 +1,36 @@
+#!/usr/sbin/nft -f
+# {{ ansible_managed }}
+
+flush ruleset
+
+table inet filter {
+  chain input {
+    type filter hook input priority filter; policy drop;
+
+    iif "lo" accept
+    ct state established,related accept
+    ct state invalid drop
+
+{% if hardening_firewall_allow_icmp | bool %}
+    ip protocol icmp icmp type { echo-request, destination-unreachable, time-exceeded, parameter-problem } limit rate 10/second accept
+{% endif %}
+    # IPv6 needs ICMPv6 for neighbour discovery.
+    ip6 nexthdr icmpv6 icmpv6 type { echo-request, destination-unreachable, packet-too-big, time-exceeded, parameter-problem, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } accept
+
+    tcp dport {{ hardening_ssh_port }} ct state new limit rate 15/minute accept
+{% if hardening_firewall_allowed_tcp_ports | length > 0 %}
+    tcp dport { {{ hardening_firewall_allowed_tcp_ports | join(', ') }} } accept
+{% endif %}
+{% if hardening_firewall_allowed_udp_ports | length > 0 %}
+    udp dport { {{ hardening_firewall_allowed_udp_ports | join(', ') }} } accept
+{% endif %}
+  }
+
+  chain forward {
+    type filter hook forward priority filter; policy drop;
+  }
+
+  chain output {
+    type filter hook output priority filter; policy accept;
+  }
+}

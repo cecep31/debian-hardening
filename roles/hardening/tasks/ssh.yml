@@ -1,0 +1,22 @@
+---
+# Debian reads sshd_config.d/*.conf first and the first value wins,
+# so a low number keeps these settings ahead of cloud-init and others.
+- name: Configure sshd
+  ansible.builtin.template:
+    src: sshd_hardening.conf.j2
+    dest: /etc/ssh/sshd_config.d/10-hardening.conf
+    owner: root
+    group: root
+    mode: "0600"
+  notify: Reload ssh
+
+- name: Validate the full sshd configuration
+  ansible.builtin.command: sshd -t
+  changed_when: false
+
+- name: Ensure ssh is enabled and running
+  ansible.builtin.systemd_service:
+    name: ssh
+    enabled: true
+    state: started
+  when: hardening_runtime_apply | bool

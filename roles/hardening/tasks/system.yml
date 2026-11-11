@@ -1,0 +1,67 @@
+---
+# ---------------------------------------------------------------- AppArmor and time sync
+- name: Ensure AppArmor and time sync are enabled and running
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - apparmor
+    - systemd-timesyncd
+  when: hardening_runtime_apply | bool
+
+# ---------------------------------------------------------------- Core dumps
+- name: Disable core dumps via limits
+  ansible.builtin.copy:
+    dest: /etc/security/limits.d/10-hardening.conf
+    content: |
+      * hard core 0
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Create systemd coredump drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/coredump.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Disable systemd core dump storage
+  ansible.builtin.copy:
+    dest: /etc/systemd/coredump.conf.d/hardening.conf
+    content: |
+      [Coredump]
+      Storage=none
+      ProcessSizeMax=0
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+# ---------------------------------------------------------------- Login defaults
+- name: Set password ageing and umask defaults
+  ansible.builtin.lineinfile:
+    path: /etc/login.defs
+    regexp: "^#?\\s*{{ item.key }}\\s"
+    line: "{{ item.key }}\t{{ item.value }}"
+  loop:
+    - { key: PASS_MAX_DAYS, value: "{{ hardening_pass_max_days }}" }
+    - { key: PASS_MIN_DAYS, value: "{{ hardening_pass_min_days }}" }
+    - { key: PASS_WARN_AGE, value: "{{ hardening_pass_warn_age }}" }
+    - { key: UMASK, value: "{{ hardening_umask }}" }
+  loop_control:
+    label: "{{ item.key }}"
+
+# ---------------------------------------------------------------- sudo
+- name: Harden sudo defaults
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/10-hardening
+    content: |
+      Defaults use_pty
+      Defaults logfile="/var/log/sudo.log"
+    owner: root
+    group: root
+    mode: "0440"
+    validate: visudo -cf %s

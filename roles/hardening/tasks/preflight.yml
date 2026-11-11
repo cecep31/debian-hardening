@@ -1,0 +1,83 @@
+---
+- name: Check the OS is Debian 13
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['distribution'] == 'Debian'
+      - ansible_facts['distribution_major_version'] == '13'
+    fail_msg: >-
+      This role targets Debian 13 (trixie). Found
+      {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}.
+    quiet: true
+
+- name: Check firewall and SSH ports are valid
+  ansible.builtin.assert:
+    that:
+      - hardening_ssh_port | int in range(1, 65536)
+      - hardening_firewall_allowed_tcp_ports is sequence and hardening_firewall_allowed_tcp_ports is not string
+      - hardening_firewall_allowed_udp_ports is sequence and hardening_firewall_allowed_udp_ports is not string
+      - (hardening_firewall_allowed_tcp_ports + hardening_firewall_allowed_udp_ports)
+        | reject('integer') | list | length == 0
+      - (hardening_firewall_allowed_tcp_ports + hardening_firewall_allowed_udp_ports)
+        | select('integer') | reject('ge', 1) | list | length == 0
+      - (hardening_firewall_allowed_tcp_ports + hardening_firewall_allowed_udp_ports)
+        | select('integer') | reject('le', 65535) | list | length == 0
+    fail_msg: >-
+      hardening_firewall_allowed_tcp_ports and hardening_firewall_allowed_udp_ports
+      must be lists of port numbers between 1 and 65535, e.g. [80, 443].
+    quiet: true
+
+# Same test systemd uses (sd_booted): more reliable than the service_mgr fact in containers.
+- name: Detect a running systemd
+  ansible.builtin.stat:
+    path: /run/systemd/system
+  register: hardening_systemd_dir
+
+- name: Remember whether systemd is running
+  ansible.builtin.set_fact:
+    hardening_systemd_running: "{{ hardening_systemd_dir.stat.exists and hardening_systemd_dir.stat.isdir }}"
+
+# Guard against locking yourself out before SSH settings change.
+- name: Refuse to disable root login while connected as root
+  ansible.builtin.assert:
+    that: ansible_user | default('root') != 'root'
+    fail_msg: >-
+      You are connecting as root, but root login will be disabled.
+      Create a sudo user with an SSH key and set ansible_user to it first.
+    quiet: true
+  when:
+    - not (hardening_ssh_permit_root_login | bool)
+    - ansible_connection | default('ssh') not in ['local', 'docker', 'community.docker.docker']
+
+- name: Look up the connecting user
+  ansible.builtin.getent:
+    database: passwd
+    key: "{{ ansible_user }}"
+  when:
+    - not (hardening_ssh_password_authentication | bool)
+    - ansible_connection | default('ssh') not in ['local', 'docker', 'community.docker.docker']
+
+- name: Find the connecting user's authorized_keys
+  ansible.builtin.stat:
+    path: "{{ ansible_facts['getent_passwd'][ansible_user][4] }}/.ssh/authorized_keys"
+  register: hardening_authorized_keys
+  when: ansible_facts['getent_passwd'] is defined
+
+- name: Refuse to disable password login without an SSH key
+  ansible.builtin.assert:
+    that:
+      - hardening_authorized_keys.stat.exists
+      - hardening_authorized_keys.stat.size > 0
+    fail_msg: >-
+      {{ ansible_user }} has no ~/.ssh/authorized_keys, but password login will be disabled.
+      Install an SSH key for this user first.
+    quiet: true
+  when: hardening_authorized_keys.stat is defined
+
+- name: Refuse an SSH allow list that excludes the connecting user
+  ansible.builtin.assert:
+    that: ansible_user in hardening_ssh_allow_users
+    fail_msg: "{{ ansible_user }} is not in hardening_ssh_allow_users and would be locked out."
+    quiet: true
+  when:
+    - hardening_ssh_allow_users | length > 0
+    - ansible_connection | default('ssh') not in ['local', 'docker', 'community.docker.docker']

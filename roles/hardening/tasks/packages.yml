@@ -1,0 +1,25 @@
+---
+- name: Install hardening packages
+  ansible.builtin.apt:
+    name:
+      - openssh-server
+      - nftables
+      - unattended-upgrades
+      - apt-listchanges
+      - fail2ban
+      - python3-systemd
+      - auditd
+      - apparmor
+      - apparmor-utils
+      - systemd-timesyncd
+      - sudo
+      - kmod
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Remove insecure legacy packages
+  ansible.builtin.apt:
+    name: "{{ hardening_packages_remove }}"
+    state: absent
+    purge: true

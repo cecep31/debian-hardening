@@ -1,0 +1,7 @@
+// {{ ansible_managed }}
+// Debian's 50unattended-upgrades already installs security updates.
+// These settings only adjust behaviour.
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+Unattended-Upgrade::Remove-Unused-Dependencies "true";
+Unattended-Upgrade::Automatic-Reboot "{{ 'true' if hardening_auto_reboot | bool else 'false' }}";
+Unattended-Upgrade::Automatic-Reboot-Time "{{ hardening_auto_reboot_time }}";

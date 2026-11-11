@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  role_name: hardening
+  author: platform-team
+  description: Baseline security hardening for Debian 13 (trixie)
+  license: MIT
+  min_ansible_version: "2.18"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+dependencies: []

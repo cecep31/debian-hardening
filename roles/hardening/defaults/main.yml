@@ -1,0 +1,100 @@
+---
+# When false, only config files are written: nothing is started, reloaded or loaded.
+# Defaults to true only when systemd is running (false in a test container).
+hardening_runtime_apply: "{{ hardening_systemd_running | default(false) }}"
+
+# ---------------------------------------------------------------- SSH
+hardening_ssh_port: 22
+hardening_ssh_permit_root_login: false
+hardening_ssh_password_authentication: false
+hardening_ssh_allow_users: []
+hardening_ssh_max_auth_tries: 3
+hardening_ssh_login_grace_time: 30
+hardening_ssh_client_alive_interval: 300
+hardening_ssh_client_alive_count_max: 2
+hardening_ssh_x11_forwarding: false
+hardening_ssh_allow_tcp_forwarding: false
+hardening_ssh_allow_agent_forwarding: false
+
+# ---------------------------------------------------------------- Firewall (nftables)
+hardening_firewall_enabled: true
+hardening_firewall_allowed_tcp_ports: []
+hardening_firewall_allowed_udp_ports: []
+hardening_firewall_allow_icmp: true
+
+# ---------------------------------------------------------------- Automatic updates
+hardening_auto_updates_enabled: true
+hardening_auto_reboot: false
+hardening_auto_reboot_time: "03:30"
+
+# ---------------------------------------------------------------- fail2ban
+hardening_fail2ban_enabled: true
+hardening_fail2ban_maxretry: 5
+hardening_fail2ban_findtime: 10m
+hardening_fail2ban_bantime: 1h
+
+# ---------------------------------------------------------------- auditd
+hardening_auditd_enabled: true
+
+# ---------------------------------------------------------------- Kernel
+hardening_sysctl:
+  # Network
+  net.ipv4.conf.all.accept_redirects: 0
+  net.ipv4.conf.default.accept_redirects: 0
+  net.ipv6.conf.all.accept_redirects: 0
+  net.ipv6.conf.default.accept_redirects: 0
+  net.ipv4.conf.all.secure_redirects: 0
+  net.ipv4.conf.default.secure_redirects: 0
+  net.ipv4.conf.all.send_redirects: 0
+  net.ipv4.conf.default.send_redirects: 0
+  net.ipv4.conf.all.accept_source_route: 0
+  net.ipv4.conf.default.accept_source_route: 0
+  net.ipv6.conf.all.accept_source_route: 0
+  net.ipv6.conf.default.accept_source_route: 0
+  net.ipv4.conf.all.rp_filter: 1
+  net.ipv4.conf.default.rp_filter: 1
+  net.ipv4.conf.all.log_martians: 1
+  net.ipv4.conf.default.log_martians: 1
+  net.ipv4.icmp_echo_ignore_broadcasts: 1
+  net.ipv4.icmp_ignore_bogus_error_responses: 1
+  net.ipv4.tcp_syncookies: 1
+  net.ipv6.conf.all.accept_ra: 0
+  net.ipv6.conf.default.accept_ra: 0
+  # Kernel
+  kernel.kptr_restrict: 2
+  kernel.dmesg_restrict: 1
+  kernel.yama.ptrace_scope: 1
+  kernel.randomize_va_space: 2
+  kernel.unprivileged_bpf_disabled: 1
+  net.core.bpf_jit_harden: 2
+  fs.protected_hardlinks: 1
+  fs.protected_symlinks: 1
+  fs.protected_fifos: 2
+  fs.protected_regular: 2
+  fs.suid_dumpable: 0
+
+# Rarely used filesystems and network protocols that should not load.
+hardening_disabled_kernel_modules:
+  - cramfs
+  - freevxfs
+  - hfs
+  - hfsplus
+  - jffs2
+  - udf
+  - dccp
+  - sctp
+  - rds
+  - tipc
+
+# ---------------------------------------------------------------- Packages
+hardening_packages_remove:
+  - telnet
+  - rsh-client
+  - talk
+  - nis
+
+# ---------------------------------------------------------------- Accounts
+hardening_umask: "027"
+hardening_pass_max_days: 365
+hardening_pass_min_days: 1
+hardening_pass_warn_age: 7

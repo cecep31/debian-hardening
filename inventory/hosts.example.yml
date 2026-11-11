@@ -1,0 +1,12 @@
+---
+all:
+  hosts:
+    web-01:
+      ansible_host: 203.0.113.10
+    db-01:
+      ansible_host: 203.0.113.11
+      # Per-host override example
+      hardening_firewall_allowed_tcp_ports: [5432]
+  vars:
+    # Must be a non-root user with sudo and an SSH key already installed.
+    ansible_user: admin

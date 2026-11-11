@@ -1,0 +1,13 @@
+---
+# Common settings for every host. Full list of options: roles/hardening/defaults/main.yml
+
+# SSH
+hardening_ssh_port: 22
+hardening_ssh_allow_users: []          # e.g. ["admin", "deploy"]; empty allows all users
+
+# Firewall: SSH is always allowed. Add the ports your services need.
+hardening_firewall_allowed_tcp_ports: []  # e.g. [80, 443]
+
+# Automatic security updates
+hardening_auto_reboot: false
+hardening_auto_reboot_time: "03:30"
