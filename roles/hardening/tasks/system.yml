@@ -9,8 +9,50 @@
     - apparmor
     - systemd-timesyncd
   when: hardening_runtime_apply | bool
+  # --check does not really install packages, so their services may not exist yet.
+  ignore_errors: "{{ ansible_check_mode }}"
+
+- name: Create timesyncd drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/timesyncd.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: hardening_ntp_servers | length > 0
+
+- name: Use the platform time source
+  ansible.builtin.copy:
+    dest: /etc/systemd/timesyncd.conf.d/10-hardening.conf
+    content: |
+      # Managed by Ansible (platform: {{ hardening_platform_effective }})
+      [Time]
+      NTP={{ hardening_ntp_servers | join(' ') }}
+      FallbackNTP={{ hardening_ntp_fallback_servers | join(' ') }}
+    owner: root
+    group: root
+    mode: "0644"
+  when: hardening_ntp_servers | length > 0
+  notify: Restart timesyncd
 
 # ---------------------------------------------------------------- Core dumps
+# Debian's own /etc/security/limits.d/10-coredump-debian.conf sets "* hard core infinity".
+# Ours is read later and wins, but scanners flag the conflict, so comment the others out.
+- name: Find other core dump limits
+  ansible.builtin.find:
+    paths: /etc/security/limits.d
+    patterns: "*.conf"
+    excludes: "10-hardening.conf"
+  register: hardening_limits_files
+
+- name: Comment out conflicting core dump limits
+  ansible.builtin.replace:
+    path: "{{ item }}"
+    regexp: '^([ \t]*\*[ \t]+(?:hard|-)[ \t]+core[ \t]+(?!0[ \t]*$)\S.*)$'
+    replace: '# \1  # set in limits.d/10-hardening.conf'
+  loop: "{{ (hardening_limits_files.files | map(attribute='path') | list) + ['/etc/security/limits.conf'] }}"
+  failed_when: false  # limits.conf may not exist
+
 - name: Disable core dumps via limits
   ansible.builtin.copy:
     dest: /etc/security/limits.d/10-hardening.conf
@@ -54,6 +96,40 @@
   loop_control:
     label: "{{ item.key }}"
 
+# login.defs only covers login shells started through PAM; interactive shells read these.
+- name: Set the default umask for login shells
+  ansible.builtin.copy:
+    dest: /etc/profile.d/10-hardening-umask.sh
+    content: |
+      umask {{ hardening_umask }}
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Set the default umask for interactive bash shells
+  ansible.builtin.blockinfile:
+    path: /etc/bash.bashrc
+    marker: "# {mark} ANSIBLE MANAGED: hardening umask"
+    block: |
+      umask {{ hardening_umask }}
+
+# ---------------------------------------------------------------- su
+- name: Create the group allowed to use su
+  ansible.builtin.group:
+    name: "{{ hardening_su_group }}"
+    state: present
+    system: true
+  when: hardening_su_group | length > 0
+
+- name: Restrict su to the su group
+  ansible.builtin.lineinfile:
+    path: /etc/pam.d/su
+    regexp: '^\s*auth\s+required\s+pam_wheel\.so\s+use_uid'
+    # Placed before the first "auth" include so it is evaluated first.
+    insertbefore: '^@include common-auth'
+    line: "auth       required   pam_wheel.so use_uid group={{ hardening_su_group }}"
+  when: hardening_su_group | length > 0
+
 # ---------------------------------------------------------------- sudo
 - name: Harden sudo defaults
   ansible.builtin.copy:
@@ -61,7 +137,25 @@
     content: |
       Defaults use_pty
       Defaults logfile="/var/log/sudo.log"
+      Defaults timestamp_timeout={{ hardening_sudo_timestamp_timeout }}
     owner: root
     group: root
     mode: "0440"
     validate: visudo -cf %s
+
+- name: Rotate the sudo log
+  ansible.builtin.copy:
+    dest: /etc/logrotate.d/sudo-hardening
+    content: |
+      /var/log/sudo.log {
+          weekly
+          rotate 12
+          compress
+          delaycompress
+          missingok
+          notifempty
+          create 0600 root root
+      }
+    owner: root
+    group: root
+    mode: "0644"

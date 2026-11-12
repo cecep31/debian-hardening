@@ -14,3 +14,5 @@
     enabled: true
     state: started
   when: hardening_runtime_apply | bool
+  # --check does not really install packages, so their services may not exist yet.
+  ignore_errors: "{{ ansible_check_mode }}"

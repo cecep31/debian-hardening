@@ -1,0 +1,21 @@
+---
+# /dev/shm and /tmp are tmpfs on Debian 13. Listing them in /etc/fstab makes the mount
+# options explicit (CIS checks fstab). /dev/shm gets noexec; /tmp only when opted in,
+# because some installers and build tools run scripts from /tmp.
+- name: Mount /dev/shm with nodev, nosuid, noexec
+  ansible.posix.mount:
+    path: /dev/shm
+    src: tmpfs
+    fstype: tmpfs
+    opts: defaults,nodev,nosuid,noexec
+    # Remount now on a real host; in a container only fstab is written.
+    state: "{{ 'mounted' if hardening_runtime_apply | bool else 'present' }}"
+
+- name: Mount /tmp with noexec (opt-in)
+  ansible.posix.mount:
+    path: /tmp
+    src: tmpfs
+    fstype: tmpfs
+    opts: defaults,nodev,nosuid,noexec,size=50%,mode=1777
+    state: "{{ 'mounted' if hardening_runtime_apply | bool else 'present' }}"
+  when: hardening_tmp_noexec | bool

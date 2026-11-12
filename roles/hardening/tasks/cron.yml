@@ -1,0 +1,45 @@
+---
+- name: Find cron and at directories
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - /etc/crontab
+    - /etc/cron.d
+    - /etc/cron.hourly
+    - /etc/cron.daily
+    - /etc/cron.weekly
+    - /etc/cron.monthly
+    - /etc/cron.yearly
+  register: hardening_cron_paths
+
+- name: Restrict cron files to root
+  ansible.builtin.file:
+    path: "{{ item.item }}"
+    owner: root
+    group: root
+    mode: "{{ '0600' if item.stat.isreg else '0700' }}"
+  loop: "{{ hardening_cron_paths.results | selectattr('stat.exists') | list }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+# Only users listed in cron.allow / at.allow may schedule jobs; root is always allowed.
+- name: Allow only listed users to use cron and at
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: touch  # creates it empty; keeps users you add
+    modification_time: preserve
+    access_time: preserve
+    owner: root
+    group: root
+    mode: "0640"
+  loop:
+    - /etc/cron.allow
+    - /etc/at.allow
+
+- name: Remove cron and at deny lists
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/cron.deny
+    - /etc/at.deny

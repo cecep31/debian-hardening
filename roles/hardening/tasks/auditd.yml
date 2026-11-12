@@ -1,4 +1,12 @@
 ---
+# Login records moved around in Debian 13 (wtmpdb, lastlog2), and a watch on a
+# missing directory makes augenrules fail, so only watch what exists on the host.
+- name: Find login record locations
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ hardening_auditd_login_paths }}"
+  register: hardening_auditd_login_stat
+
 - name: Write audit rules
   ansible.builtin.template:
     src: audit.rules.j2
@@ -6,6 +14,9 @@
     owner: root
     group: root
     mode: "0640"
+  vars:
+    hardening_auditd_login_watches: >-
+      {{ hardening_auditd_login_stat.results | selectattr('stat.exists') | map(attribute='item') | list }}
   notify: Load audit rules
 
 - name: Ensure auditd is enabled and running
@@ -14,3 +25,5 @@
     enabled: true
     state: started
   when: hardening_runtime_apply | bool
+  # --check does not really install packages, so their services may not exist yet.
+  ignore_errors: "{{ ansible_check_mode }}"

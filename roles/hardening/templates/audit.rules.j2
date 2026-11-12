@@ -15,13 +15,20 @@
 -w /etc/ssh/sshd_config -p wa -k sshd
 -w /etc/ssh/sshd_config.d/ -p wa -k sshd
 
-# Login records
--w /var/log/lastlog -p wa -k logins
--w /var/run/faillock/ -p wa -k logins
+# Login records (only paths that exist on this host)
+{% for path in hardening_auditd_login_watches %}
+-w {{ path }} -p wa -k logins
+{% endfor %}
 
 # Time changes
 -a always,exit -F arch=b64 -S adjtimex,settimeofday,clock_settime -k time-change
+{% if ansible_facts['architecture'] == 'x86_64' %}
+-a always,exit -F arch=b32 -S adjtimex,settimeofday,clock_settime,stime -k time-change
+{% endif %}
 -w /etc/localtime -p wa -k time-change
 
 # Kernel module loading
 -a always,exit -F arch=b64 -S init_module,finit_module,delete_module -k modules
+{% if ansible_facts['architecture'] == 'x86_64' %}
+-a always,exit -F arch=b32 -S init_module,finit_module,delete_module -k modules
+{% endif %}

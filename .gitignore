@@ -1,3 +1,4 @@
 inventory/hosts.yml
 .venv/
 *.retry
+tests/.cache/

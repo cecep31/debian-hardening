@@ -26,6 +26,28 @@
       must be lists of port numbers between 1 and 65535, e.g. [80, 443].
     quiet: true
 
+- name: Check the platform setting
+  ansible.builtin.assert:
+    that: hardening_platform in ['auto', 'aws', 'gcp', 'generic']
+    fail_msg: "hardening_platform must be auto, aws, gcp or generic, not {{ hardening_platform }}."
+    quiet: true
+
+# Nitro instances report "Amazon EC2"; older Xen instances only show "amazon" in the BIOS version.
+- name: Work out the platform
+  ansible.builtin.set_fact:
+    hardening_platform_effective: >-
+      {%- set dmi = (ansible_facts['system_vendor'] | default('') ~ ' '
+                     ~ ansible_facts['bios_version'] | default('') ~ ' '
+                     ~ ansible_facts['product_name'] | default('')) | lower -%}
+      {%- if hardening_platform != 'auto' -%}{{ hardening_platform }}
+      {%- elif 'amazon' in dmi -%}aws
+      {%- elif 'google' in dmi -%}gcp
+      {%- else -%}generic{%- endif -%}
+
+- name: Show the platform
+  ansible.builtin.debug:
+    msg: "Platform: {{ hardening_platform_effective }} (hardening_platform={{ hardening_platform }})"
+
 # Same test systemd uses (sd_booted): more reliable than the service_mgr fact in containers.
 - name: Detect a running systemd
   ansible.builtin.stat:
@@ -36,10 +58,27 @@
   ansible.builtin.set_fact:
     hardening_systemd_running: "{{ hardening_systemd_dir.stat.exists and hardening_systemd_dir.stat.isdir }}"
 
+# The user Ansible logs in as. With become, SUDO_USER holds it when ansible_user is unset.
+- name: Remember the connecting user
+  ansible.builtin.set_fact:
+    hardening_remote_user: >-
+      {{ ansible_user | default(ansible_facts['env']['SUDO_USER'] | default(ansible_facts['user_id'])) }}
+
+# CIS wants an explicit SSH allow list. If none is set, allow the connecting user, which
+# the lockout checks below already require to be able to log in.
+- name: Work out who may log in over SSH
+  ansible.builtin.set_fact:
+    hardening_ssh_effective_allow_users: >-
+      {{ hardening_ssh_allow_users if (hardening_ssh_allow_users | length > 0)
+         else [] if (hardening_ssh_allow_groups | length > 0)
+         else [hardening_remote_user]
+              if (hardening_ssh_restrict_access | bool and hardening_remote_user != 'root')
+         else [] }}
+
 # Guard against locking yourself out before SSH settings change.
 - name: Refuse to disable root login while connected as root
   ansible.builtin.assert:
-    that: ansible_user | default('root') != 'root'
+    that: hardening_remote_user != 'root'
     fail_msg: >-
       You are connecting as root, but root login will be disabled.
       Create a sudo user with an SSH key and set ansible_user to it first.
@@ -51,14 +90,14 @@
 - name: Look up the connecting user
   ansible.builtin.getent:
     database: passwd
-    key: "{{ ansible_user }}"
+    key: "{{ hardening_remote_user }}"
   when:
     - not (hardening_ssh_password_authentication | bool)
     - ansible_connection | default('ssh') not in ['local', 'docker', 'community.docker.docker']
 
 - name: Find the connecting user's authorized_keys
   ansible.builtin.stat:
-    path: "{{ ansible_facts['getent_passwd'][ansible_user][4] }}/.ssh/authorized_keys"
+    path: "{{ ansible_facts['getent_passwd'][hardening_remote_user][4] }}/.ssh/authorized_keys"
   register: hardening_authorized_keys
   when: ansible_facts['getent_passwd'] is defined
 
@@ -68,16 +107,28 @@
       - hardening_authorized_keys.stat.exists
       - hardening_authorized_keys.stat.size > 0
     fail_msg: >-
-      {{ ansible_user }} has no ~/.ssh/authorized_keys, but password login will be disabled.
+      {{ hardening_remote_user }} has no ~/.ssh/authorized_keys, but password login will be disabled.
       Install an SSH key for this user first.
     quiet: true
   when: hardening_authorized_keys.stat is defined
 
 - name: Refuse an SSH allow list that excludes the connecting user
   ansible.builtin.assert:
-    that: ansible_user in hardening_ssh_allow_users
-    fail_msg: "{{ ansible_user }} is not in hardening_ssh_allow_users and would be locked out."
+    that: hardening_remote_user in hardening_ssh_allow_users
+    fail_msg: "{{ hardening_remote_user }} is not in hardening_ssh_allow_users and would be locked out."
     quiet: true
   when:
     - hardening_ssh_allow_users | length > 0
     - ansible_connection | default('ssh') not in ['local', 'docker', 'community.docker.docker']
+
+# On GCP, the guest agent and OS Login create users on demand (e.g. from IAM or
+# "gcloud compute ssh"); the SSH allow list blocks users that are not in it.
+- name: Warn about an SSH allow list on GCP
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: SSH is limited to {{ hardening_ssh_effective_allow_users | join(', ') }} on GCP.
+      Other users created by OS Login or the guest agent (gcloud compute ssh, IAM) cannot
+      log in unless you list them in hardening_ssh_allow_users or hardening_ssh_allow_groups.
+  when:
+    - hardening_platform_effective == 'gcp'
+    - hardening_ssh_effective_allow_users | length > 0

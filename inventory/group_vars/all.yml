@@ -1,6 +1,9 @@
 ---
 # Common settings for every host. Full list of options: roles/hardening/defaults/main.yml
 
+# Platform: auto detects AWS and GCP; or set aws | gcp | generic.
+hardening_platform: auto
+
 # SSH
 hardening_ssh_port: 22
 hardening_ssh_allow_users: []          # e.g. ["admin", "deploy"]; empty allows all users

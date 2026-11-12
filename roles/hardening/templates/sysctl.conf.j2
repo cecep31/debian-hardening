@@ -2,3 +2,7 @@
 {% for key, value in hardening_sysctl | dictsort %}
 {{ key }} = {{ value }}
 {% endfor %}
+
+# IPv6 router advertisements (platform: {{ hardening_platform_effective }})
+net.ipv6.conf.all.accept_ra = {{ 1 if hardening_ipv6_accept_ra | bool else 0 }}
+net.ipv6.conf.default.accept_ra = {{ 1 if hardening_ipv6_accept_ra | bool else 0 }}

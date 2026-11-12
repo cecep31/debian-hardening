@@ -1,0 +1,44 @@
+---
+# journald is the log system here: persistent, compressed, not forwarded to a syslog
+# daemon (none is installed). Ship logs off the host with your cloud's agent.
+- name: Configure journald
+  community.general.ini_file:
+    path: /etc/systemd/journald.conf
+    section: Journal
+    option: "{{ item.key }}"
+    value: "{{ item.value }}"
+    no_extra_spaces: true
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - { key: Storage, value: persistent }
+    - { key: Compress, value: "yes" }
+    - { key: ForwardToSyslog, value: "{{ 'yes' if hardening_rsyslog_enabled | bool else 'no' }}" }
+  loop_control:
+    label: "{{ item.key }}={{ item.value }}"
+  notify: Restart journald
+
+- name: Ensure rsyslog is enabled and running
+  ansible.builtin.systemd_service:
+    name: rsyslog
+    enabled: true
+    state: started
+  when:
+    - hardening_rsyslog_enabled | bool
+    - hardening_runtime_apply | bool
+  # --check does not really install packages, so their services may not exist yet.
+  ignore_errors: "{{ ansible_check_mode }}"
+
+# The package ships a network receiver for remote journals. Nothing here needs it, so it
+# is masked (CIS: socket_systemd-journal-remote_disabled checks for LoadState masked).
+- name: Keep the journal receiver off
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    masked: true
+    state: stopped
+  loop:
+    - systemd-journal-remote.socket
+    - systemd-journal-remote.service
+  when: hardening_runtime_apply | bool
+  ignore_errors: "{{ ansible_check_mode }}"

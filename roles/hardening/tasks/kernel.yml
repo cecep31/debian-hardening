@@ -15,3 +15,54 @@
     owner: root
     group: root
     mode: "0644"
+
+# Vendor files (e.g. systemd's /usr/lib/sysctl.d/50-default.conf sets rp_filter = 2) can
+# set the same keys. Ours wins because 60- sorts later, but CIS flags the conflict, so the
+# other lines for keys we manage are commented out.
+- name: Find other sysctl files
+  ansible.builtin.find:
+    paths: [/etc/sysctl.d, /run/sysctl.d, /usr/local/lib/sysctl.d, /usr/lib/sysctl.d]
+    patterns: "*.conf"
+    excludes: "60-hardening.conf"
+  register: hardening_sysctl_files
+
+- name: Comment out other settings for keys this role manages
+  ansible.builtin.replace:
+    path: "{{ item }}"
+    regexp: '^([ \t]*-?[ \t]*(?:{{ hardening_sysctl.keys() | map("regex_escape") | join("|") }})[ \t]*=.*)$'
+    replace: '# \1  # set in /etc/sysctl.d/60-hardening.conf'
+  loop: "{{ (hardening_sysctl_files.files | map(attribute='path') | list) + ['/etc/sysctl.conf'] }}"
+  failed_when: false  # /etc/sysctl.conf may not exist
+  notify: Apply sysctl
+
+# Interfaces that appear after boot (e.g. cloud NICs) get kernel defaults, so apply the
+# settings again once the network is up.
+- name: Re-apply sysctl settings after the network is up
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/sysctl-reapply-network.service
+    content: |
+      [Unit]
+      Description=Re-apply sysctl hardening after network interfaces come up
+      After=networking.service systemd-networkd.service
+      DefaultDependencies=no
+
+      [Service]
+      Type=oneshot
+      ExecStart=/sbin/sysctl --system
+      RemainAfterExit=yes
+
+      [Install]
+      WantedBy=multi-user.target
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Enable sysctl re-apply service
+  ansible.builtin.systemd_service:
+    name: sysctl-reapply-network.service
+    enabled: true
+    daemon_reload: true
+  when: hardening_runtime_apply | bool
+  # --check does not really install packages, so their services may not exist yet.
+  ignore_errors: "{{ ansible_check_mode }}"

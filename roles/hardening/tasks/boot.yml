@@ -1,0 +1,44 @@
+---
+# Only on hosts that boot with GRUB (not in containers).
+- name: Check for GRUB
+  ansible.builtin.stat:
+    path: /etc/default/grub
+  register: hardening_grub_default
+
+- name: Configure GRUB
+  when: hardening_grub_default.stat.exists
+  block:
+    # Debian enables AppArmor by default; this makes it explicit on the kernel command line.
+    - name: Enable AppArmor on the kernel command line
+      ansible.builtin.replace:
+        path: /etc/default/grub
+        regexp: '^(GRUB_CMDLINE_LINUX="(?![^"]*\b{{ item.key }}=)[^"]*)"'
+        replace: '\1 {{ item.key }}={{ item.value }}"'
+      loop:
+        - { key: apparmor, value: "1" }
+        - { key: security, value: apparmor }
+      loop_control:
+        label: "{{ item.key }}={{ item.value }}"
+      register: hardening_grub_cmdline
+
+    # Run now rather than as a handler: update-grub rewrites grub.cfg as 0444,
+    # so the permissions below must be set after it.
+    - name: Regenerate the GRUB config
+      ansible.builtin.command: update-grub
+      when:
+        - hardening_grub_cmdline is changed
+        - hardening_runtime_apply | bool
+      changed_when: true
+
+    - name: Find the GRUB config
+      ansible.builtin.stat:
+        path: /boot/grub/grub.cfg
+      register: hardening_grub_cfg
+
+    - name: Make the GRUB config readable by root only
+      ansible.builtin.file:
+        path: /boot/grub/grub.cfg
+        owner: root
+        group: root
+        mode: "0400"
+      when: hardening_grub_cfg.stat.exists

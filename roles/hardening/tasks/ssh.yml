@@ -1,18 +1,110 @@
 ---
-# Debian reads sshd_config.d/*.conf first and the first value wins,
-# so a low number keeps these settings ahead of cloud-init and others.
-- name: Configure sshd
-  ansible.builtin.template:
-    src: sshd_hardening.conf.j2
-    dest: /etc/ssh/sshd_config.d/10-hardening.conf
+# Cloud images set some of our directives in sshd_config or their own drop-ins
+# (e.g. "PermitRootLogin yes" on DigitalOcean). sshd uses our value because ours is read
+# first, but the leftover lines are confusing and compliance scanners flag them as
+# conflicts. Comment them out, leaving Match blocks and the role's own block alone.
+- name: Find other sshd config files
+  ansible.builtin.find:
+    paths: /etc/ssh/sshd_config.d
+    patterns: "*.conf"
+    excludes: "10-hardening.conf"
+  register: hardening_sshd_dropins
+
+- name: Read sshd config files
+  ansible.builtin.slurp:
+    src: "{{ item }}"
+  loop: "{{ ['/etc/ssh/sshd_config'] + (hardening_sshd_dropins.files | map(attribute='path') | list) }}"
+  register: hardening_sshd_sources
+
+- name: Comment out directives this role manages
+  ansible.builtin.copy:
+    dest: "{{ item.item }}"
+    content: "{{ hardening_sshd_new }}"
     owner: root
     group: root
-    mode: "0600"
+    mode: "0600"  # CIS: sshd config readable by root only
+  loop: "{{ hardening_sshd_sources.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  vars:
+    hardening_sshd_old: "{{ item.content | b64decode }}"
+    # The role's own block in sshd_config is set aside so it is not commented out.
+    hardening_sshd_block_re: '(?s)# BEGIN ANSIBLE MANAGED: hardening sshd.*?# END ANSIBLE MANAGED: hardening sshd'
+    hardening_sshd_block: "{{ hardening_sshd_old | regex_search(hardening_sshd_block_re) | default('', true) }}"
+    hardening_sshd_plain: "{{ hardening_sshd_old | regex_replace(hardening_sshd_block_re, '@@HARDENING_BLOCK@@') }}"
+    # Everything before the first Match line; Match blocks are left as they are.
+    hardening_sshd_head: >-
+      {{ hardening_sshd_plain | regex_replace('(?ims)^[ \t]*match\s.*\Z', '') }}
+    hardening_sshd_tail: "{{ hardening_sshd_plain[hardening_sshd_head | length :] }}"
+    hardening_sshd_new: >-
+      {{ (hardening_sshd_head | regex_replace(
+           '(?im)^([ \t]*)((?:' ~ (hardening_ssh_managed_directives | join('|')) ~ ')[ \t=].*)$',
+           '\1# \2  # set in sshd_config.d/10-hardening.conf')
+         ~ hardening_sshd_tail) | replace('@@HARDENING_BLOCK@@', hardening_sshd_block) }}
   notify: Reload ssh
 
-- name: Validate the full sshd configuration
-  ansible.builtin.command: sshd -t
-  changed_when: false
+# Debian reads sshd_config.d/*.conf first and the first value wins,
+# so a low number keeps these settings ahead of cloud-init and others.
+# The drop-in is checked together with the rest of the config (sshd -t);
+# if that fails, the previous file is put back so a reboot cannot leave sshd broken.
+- name: Configure sshd
+  block:
+    - name: Write sshd hardening config
+      ansible.builtin.template:
+        src: sshd_hardening.conf.j2
+        dest: /etc/ssh/sshd_config.d/10-hardening.conf
+        owner: root
+        group: root
+        mode: "0600"
+        backup: true  # backup name ends in "~", so sshd's *.conf include ignores it
+      register: hardening_sshd_config
+      notify: Reload ssh
+
+    # Compliance scanners (CIS/OpenSCAP) read only /etc/ssh/sshd_config and do not follow
+    # its Include line, so the same settings go at the top of that file too. Identical
+    # values in both places are harmless; first match wins.
+    - name: Repeat the settings in sshd_config for compliance scanners
+      ansible.builtin.blockinfile:
+        path: /etc/ssh/sshd_config
+        marker: "# {mark} ANSIBLE MANAGED: hardening sshd"
+        insertbefore: BOF
+        block: "{{ lookup('ansible.builtin.template', 'sshd_hardening.conf.j2') }}"
+        owner: root
+        group: root
+        mode: "0600"
+        validate: sshd -t -f %s
+      vars:
+        hardening_sshd_in_main: true
+      notify: Reload ssh
+
+    - name: Validate the full sshd configuration
+      ansible.builtin.command: sshd -t
+      changed_when: false
+
+  rescue:
+    - name: Restore the previous sshd hardening config
+      ansible.builtin.copy:
+        src: "{{ hardening_sshd_config.backup_file }}"
+        dest: /etc/ssh/sshd_config.d/10-hardening.conf
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0600"
+      when: hardening_sshd_config.backup_file is defined
+
+    - name: Remove the new sshd hardening config
+      ansible.builtin.file:
+        path: /etc/ssh/sshd_config.d/10-hardening.conf
+        state: absent
+      when:
+        - hardening_sshd_config is changed
+        - hardening_sshd_config.backup_file is not defined
+
+    - name: Stop after an invalid sshd configuration
+      ansible.builtin.fail:
+        msg: >-
+          sshd -t rejected the configuration, so the previous sshd config was kept
+          and SSH was not reloaded. Run `sshd -t` on the host to see why.
 
 - name: Ensure ssh is enabled and running
   ansible.builtin.systemd_service:
@@ -20,3 +112,5 @@
     enabled: true
     state: started
   when: hardening_runtime_apply | bool
+  # --check does not really install packages, so their services may not exist yet.
+  ignore_errors: "{{ ansible_check_mode }}"

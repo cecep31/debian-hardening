@@ -38,3 +38,41 @@
 - name: System settings
   ansible.builtin.import_tasks: system.yml
   tags: [system]
+
+- name: Accounts, shells and banners
+  ansible.builtin.import_tasks: accounts.yml
+  tags: [accounts]
+
+- name: Password policy (PAM)
+  ansible.builtin.import_tasks: pam.yml
+  tags: [pam]
+
+- name: Cron
+  ansible.builtin.import_tasks: cron.yml
+  tags: [cron]
+
+- name: Logging
+  ansible.builtin.import_tasks: logging.yml
+  tags: [logging]
+
+- name: Mount options
+  ansible.builtin.import_tasks: mounts.yml
+  tags: [mounts]
+
+- name: Boot loader
+  ansible.builtin.import_tasks: boot.yml
+  tags: [boot]
+
+- name: File integrity (AIDE, opt-in)
+  ansible.builtin.import_tasks: aide.yml
+  when: hardening_aide_enabled | bool
+  tags: [aide]
+
+# Handlers (service restarts, package scripts) can touch files too; settle them first.
+- name: Run pending handlers before the final permission fixes
+  ansible.builtin.meta: flush_handlers
+  tags: [always]
+
+- name: File permissions
+  ansible.builtin.import_tasks: permissions.yml
+  tags: [system, permissions]

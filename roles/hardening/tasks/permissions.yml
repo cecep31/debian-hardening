@@ -1,0 +1,66 @@
+---
+# Runs last, after every other task and handler: other tasks (usermod, package installs,
+# services starting) rewrite shadow backups and create log files, and the permissions
+# must be set after that or the next run would have to fix them again.
+# shadow- and gshadow- are backups written by useradd/passwd; they may not exist yet.
+- name: Find shadow backup files
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+  loop:
+    - { path: /etc/shadow-, group: shadow }  # CIS keeps Debian's shadow group here
+    - { path: /etc/gshadow-, group: root }
+  loop_control:
+    label: "{{ item.path }}"
+  register: hardening_shadow_backups
+
+- name: Lock down shadow backup files
+  ansible.builtin.file:
+    path: "{{ item.item.path }}"
+    owner: root
+    group: "{{ item.item.group }}"
+    mode: "0000"
+  loop: "{{ hardening_shadow_backups.results | selectattr('stat.exists') | list }}"
+  loop_control:
+    label: "{{ item.item.path }}"
+
+# Same file selection as the CIS check: login records (wtmp, btmp, lastlog) and
+# apt's history/eipp logs keep their packaged permissions.
+- name: Remove group write and world access from log files
+  ansible.builtin.command:
+    argv:
+      - find
+      - -P
+      - /var/log/
+      - -type
+      - f
+      - -perm
+      - /u+xs,g+xws,o+xwrt
+      - "!"
+      - -name
+      - history.log*
+      - "!"
+      - -name
+      - eipp.log.xz*
+      - "!"
+      - -name
+      - "[bw]tmp"
+      - "!"
+      - -name
+      - "[bw]tmp.*"
+      - "!"
+      - -name
+      - "[bw]tmp-*"
+      - "!"
+      - -name
+      - lastlog
+      - "!"
+      - -name
+      - lastlog.*
+      - -print
+      - -exec
+      - chmod
+      - u-xs,g-xws,o-xwrt
+      - "{}"
+      - +
+  register: hardening_log_perms
+  changed_when: hardening_log_perms.stdout | length > 0

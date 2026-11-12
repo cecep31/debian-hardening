@@ -1,0 +1,86 @@
+---
+# ---------------------------------------------------------------- Login banners
+# Debian's default /etc/issue and /etc/motd reveal the OS name and version.
+- name: Write login banners
+  ansible.builtin.copy:
+    dest: "{{ item }}"
+    content: |
+      {{ hardening_banner_text }}
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - /etc/issue
+    - /etc/issue.net
+    - /etc/motd
+
+# ---------------------------------------------------------------- Shell and account defaults
+- name: Log out idle interactive shells
+  ansible.builtin.copy:
+    dest: /etc/profile.d/tmout.sh
+    content: |
+      # Managed by Ansible: log out idle shells after {{ hardening_shell_timeout }} seconds.
+      typeset -xr TMOUT={{ hardening_shell_timeout }}
+    owner: root
+    group: root
+    mode: "0644"
+  when: hardening_shell_timeout | int > 0
+
+- name: Lock accounts some days after their password expires
+  ansible.builtin.lineinfile:
+    path: /etc/default/useradd
+    regexp: '^#?\s*INACTIVE='
+    line: "INACTIVE={{ hardening_account_inactive_days }}"
+    create: true
+    owner: root
+    group: root
+    mode: "0644"
+
+# System accounts (UID < 1000) should use nologin. CIS accepts only nologin and the special
+# shells sync, shutdown and halt, so /bin/false (used by dhcpcd, do-agent, ...) is replaced too.
+- name: Read local accounts
+  ansible.builtin.getent:
+    database: passwd
+
+- name: Remove login shells from system accounts
+  ansible.builtin.user:
+    name: "{{ item.key }}"
+    shell: /usr/sbin/nologin
+  loop: "{{ ansible_facts['getent_passwd'] | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when:
+    - item.value[1] | int < 1000
+    - item.key != 'root'
+    - item.value[5] not in ['/usr/sbin/nologin', '/sbin/nologin', '/bin/sync', '/sbin/shutdown', '/sbin/halt']
+
+# Dotfiles (.bashrc, .profile, ...) in users' home directories: no group write,
+# no access for others.
+- name: Restrict user dotfile permissions
+  ansible.builtin.command:
+    argv:
+      - find
+      - "{{ item.value[4] }}"
+      - -maxdepth
+      - "1"
+      - -type
+      - f
+      - -name
+      - ".*"
+      - -perm
+      - /u+s,g+wxs,o+rwx
+      - -print
+      - -exec
+      - chmod
+      - u-s,g-wxs,o=
+      - "{}"
+      - +
+  loop: "{{ ansible_facts['getent_passwd'] | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when:
+    - item.value[1] | int >= 1000
+    - item.value[1] | int < 65534
+  register: hardening_dotfiles
+  changed_when: hardening_dotfiles.stdout | length > 0
+  failed_when: false  # a home directory may not exist

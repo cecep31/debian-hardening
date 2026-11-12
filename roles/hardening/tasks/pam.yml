@@ -1,0 +1,131 @@
+---
+# Debian builds /etc/pam.d/common-* with pam-auth-update from profiles in
+# /usr/share/pam-configs. Editing common-* by hand is undone by the next package update,
+# so the role adds its own profiles (the approach CIS Debian recommends) and runs
+# pam-auth-update.
+
+# ---------------------------------------------------------------- Password quality
+- name: Set password quality rules
+  ansible.builtin.lineinfile:
+    path: /etc/security/pwquality.conf
+    regexp: '^#?\s*{{ item.key }}\s*='
+    line: "{{ item.key }} = {{ item.value }}"
+    create: true
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ hardening_pwquality | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Apply password quality rules to root as well
+  ansible.builtin.lineinfile:
+    path: /etc/security/pwquality.conf
+    regexp: '^#?\s*enforce_for_root\s*$'
+    line: enforce_for_root
+    create: true  # in --check the package providing this file is not installed yet
+    owner: root
+    group: root
+    mode: "0644"
+
+# ---------------------------------------------------------------- PAM profiles
+# nullok lets accounts with an empty password log in. The role's copy of Debian's unix
+# profile drops it and replaces the stock profile (Conflicts: unix).
+- name: Read the stock pam_unix profile
+  ansible.builtin.slurp:
+    src: /usr/share/pam-configs/unix
+  register: hardening_pam_unix
+
+- name: Add pam_unix profile without nullok
+  ansible.builtin.copy:
+    dest: /usr/share/pam-configs/hardening-unix
+    content: >-
+      {{ hardening_pam_unix.content | b64decode
+         | regex_replace('(?m)^Name: .*$', 'Name: Unix authentication without nullok (hardening role)')
+         | regex_replace('(?m)^Priority: .*$', 'Priority: 257\nConflicts: unix')
+         | regex_replace('[ \t]*\bnullok\b', '') }}
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Update PAM
+
+- name: Add password history profile
+  ansible.builtin.copy:
+    dest: /usr/share/pam-configs/hardening-pwhistory
+    content: |
+      Name: Remember old passwords (hardening role)
+      Default: yes
+      Priority: 1023
+      Password-Type: Primary
+      Password:
+        requisite  pam_pwhistory.so remember={{ hardening_pwhistory_remember }} enforce_for_root try_first_pass use_authtok
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Update PAM
+
+# ---------------------------------------------------------------- Account lockout (opt-in)
+- name: Configure account lockout
+  ansible.builtin.copy:
+    dest: /etc/security/faillock.conf
+    content: |
+      # Managed by Ansible
+      deny = {{ hardening_faillock_deny }}
+      unlock_time = {{ hardening_faillock_unlock_time }}
+    owner: root
+    group: root
+    mode: "0644"
+  when: hardening_faillock_enabled | bool
+
+# Three profiles give the order CIS checks for in common-auth: preauth first, then
+# pam_unix, then authfail, with authsucc after the fallback to reset the counter.
+- name: Add account lockout profiles
+  ansible.builtin.copy:
+    dest: "/usr/share/pam-configs/{{ item.name }}"
+    content: "{{ item.content }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - name: hardening-faillock-preauth
+      content: |
+        Name: Check lockout before authenticating (hardening role)
+        Default: yes
+        Priority: 1024
+        Auth-Type: Primary
+        Auth:
+          required  pam_faillock.so preauth
+        Account-Type: Primary
+        Account:
+          required  pam_faillock.so
+    - name: hardening-faillock-authfail
+      content: |
+        Name: Count failed logins (hardening role)
+        Default: yes
+        Priority: 0
+        Auth-Type: Primary
+        Auth:
+          [default=die]  pam_faillock.so authfail
+    - name: hardening-faillock-authsucc
+      content: |
+        Name: Reset the failed login count on success (hardening role)
+        Default: yes
+        Priority: 0
+        Auth-Type: Additional
+        Auth:
+          sufficient  pam_faillock.so authsucc
+  loop_control:
+    label: "{{ item.name }}"
+  when: hardening_faillock_enabled | bool
+  notify: Update PAM
+
+- name: Remove account lockout profiles when disabled
+  ansible.builtin.file:
+    path: "/usr/share/pam-configs/{{ item }}"
+    state: absent
+  loop:
+    - hardening-faillock-preauth
+    - hardening-faillock-authfail
+    - hardening-faillock-authsucc
+  when: not (hardening_faillock_enabled | bool)
+  notify: Update PAM
